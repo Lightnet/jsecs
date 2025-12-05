@@ -1,4 +1,5 @@
-// performance.now polyfill
+// ECMAScript Modules
+// 
 let NOW = () => Date.now();
 if (typeof self === 'undefined' && typeof process !== 'undefined' && process.hrtime) {
     NOW = () => {
@@ -13,8 +14,8 @@ let SEQ_SYSTEM = 1;
 let SEQ_ENTITY = 1;
 let SEQ_COMPONENT = 1;
 
-/* ────────────────────── Iterator ────────────────────── */
-class Iterator {
+// ────────────────────── Iterator ────────────────────── 
+export class Iterator {
     constructor(nextFn) {
         this.cache = [];
         this.index = 0;
@@ -60,21 +61,25 @@ class Iterator {
     }
 }
 
-/* ────────────────────── Entity ────────────────────── */
-class Entity {
+// ────────────────────── Entity ──────────────────────
+export class Entity {
     constructor() {
         this.id = SEQ_ENTITY++;
         this.active = true;
         this.components = {};       // typeId → Component[]
         this.subscriptions = [];
     }
-    subscribe(handler) {
-        this.subscriptions.push(handler);
-        return () => {
-            const i = this.subscriptions.indexOf(handler);
-            if (i > -1) this.subscriptions.splice(i, 1);
-        };
+
+    subscribe(fn) {
+        this.subscriptions.push(fn);
+        return () => this.subscriptions.splice(this.subscriptions.indexOf(fn), 1);
     }
+
+    // helpers
+    has(...components) {
+        return components.every(C => C.allFrom(this).length > 0);
+    }
+
     add(component) {
         const t = component.type;
         if (!this.components[t]) this.components[t] = [];
@@ -94,27 +99,114 @@ class Entity {
     }
 }
 
-/* ────────────────────── Component ────────────────────── */
-class Component {
-    static register() {
-        const type = SEQ_COMPONENT++;
-        class Impl extends Component {
-            static type = type;
-            static allFrom(e) { return e.components[type] || []; }
-            static oneFrom(e) { const a = Impl.allFrom(e); return a[0]; }
-            constructor(data) { super(type, data); }
+// ────────────────────── Component ──────────────────────
+// decorator
+//---
+// @Component
+// class Position{
+//     static defaults = { x: 0, y: 0 };
+// }
+
+// Auto-register decorator + helper
+export function Component(target) {
+    const type = SEQ_COMPONENT++;
+
+    // Attach all the statics you need
+    target.type = type;
+
+    target.allFrom = (entity) => entity.components[type] || [];
+    target.oneFrom = (entity) => target.allFrom(entity)[0] || null;
+
+    // Best UX ever
+    target.add = (entity, data = {}) => {
+        const comp = new target(data);
+        const list = (entity.components[type] ??= []);
+        if (!list.includes(comp)) {
+            list.push(comp);
+            entity.subscriptions.forEach(fn => fn(entity, comp, null));
         }
-        return Impl;
-    }
-    constructor(type, data) {
+        return comp;
+    };
+
+    target.remove = (entity, instance) => {
+        const list = entity.components[type];
+        if (!list) return;
+        const i = list.indexOf(instance);
+        if (i === -1) return;
+        list.splice(i, 1);
+        if (list.length === 0) delete entity.components[type];
+        entity.subscriptions.forEach(fn => fn(entity, null, instance));
+    };
+
+    // Override the constructor to inject .data and .attr
+    const originalCtor = target;
+    function WrappedComponent(overrideData = {}) {
         this.type = type;
-        this.data = data;
+        this.data = { ...originalCtor.defaults, ...overrideData };
         this.attr = {};
     }
+
+    // Copy prototype
+    Object.setPrototypeOf(WrappedComponent.prototype, originalCtor.prototype);
+    WrappedComponent.prototype.constructor = WrappedComponent;
+
+    // Transfer all statics we added
+    Object.assign(WrappedComponent, originalCtor, {
+        type,
+        allFrom: target.allFrom,
+        oneFrom: target.oneFrom,
+        add: target.add,
+        remove: target.remove,
+        // Keep name!
+        name: originalCtor.name
+    });
+
+    // This is the magic: store defaults on the class
+    WrappedComponent.defaults = originalCtor.defaults || {};
+
+    return WrappedComponent;
+}
+
+// ────────────────────── defineComponent ──────────────────────
+// manual register if you hate decorators
+export function defineComponent(fields = {}) {
+    const type = SEQ_COMPONENT++;
+
+    class ComponentClass {
+        static type = type;
+        static allFrom(e) { return e.components[type] || []; }
+        static oneFrom(e) { return ComponentClass.allFrom(e)[0] || null; }
+
+        constructor(data = {}) {
+            this.type = type;
+            this.data = { ...fields, ...data };  // ← preserves your .data!
+            this.attr = {};
+        }
+
+        // Optional helpers
+        static add(entity, data = {}) {
+            const comp = new this(data);
+            (entity.components[type] ??= []).push(comp);
+            entity.subscriptions.forEach(cb => cb(entity, comp, null));
+            return comp;
+        }
+
+        static remove(entity, comp) {
+            const list = entity.components[type];
+            if (!list) return;
+            const i = list.indexOf(comp);
+            if (i === -1) return;
+            list.splice(i, 1);
+            if (list.length === 0) delete entity.components[type];
+            entity.subscriptions.forEach(cb => cb(entity, null, comp));
+        }
+    }
+
+    return ComponentClass;
 }
 
 /* ────────────────────── System ────────────────────── */
-class System {
+export class System {
     constructor(componentTypes = [], frequence = 0) {
         this.id = SEQ_SYSTEM++;
         this.componentTypes = componentTypes;   // <-- always an array
@@ -136,6 +228,10 @@ class System {
         }
         this.callbacks[event].push(cb);
     }
+    update(dt, gameTime, entity) { /* override */ }
+    enter(entity) {}
+    exit(entity) {}
+    change(entity, added, removed) {}
 }
 
 /* ────────────────────── ECS (World) ────────────────────── */
@@ -380,4 +476,10 @@ class ECS {
 
 /* ────────────────────── Export ────────────────────── */
 export default ECS;
-export { ECS, System, Entity, Component, Iterator };
+export { 
+    ECS, 
+    // System, 
+    // Entity, 
+    // Component, 
+    // Iterator 
+};
